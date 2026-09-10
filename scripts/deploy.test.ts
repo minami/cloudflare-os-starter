@@ -19,6 +19,8 @@ const validConfig: DeploymentConfig = {
     context: { name: "acme-cloudflare-os-context" },
     scheduler: { name: "acme-cloudflare-os-scheduler" },
     customGatekeeper: { name: "acme-cloudflare-os-custom" },
+    mcpGatekeeper: { name: "acme-cloudflare-os-mcp" },
+    mcpPortalGatekeeper: { name: "acme-cloudflare-os-mcp-portal" },
     errorReporter: { name: "acme-cloudflare-os-errors" },
   },
   access: {
@@ -38,6 +40,12 @@ const validConfig: DeploymentConfig = {
     artifacts: { enabled: true, namespace: "acme-context-collections" },
   },
   customGatekeeper: { name: "Acme", message: "Use the company handbook." },
+  mcpPortal: {
+    endpoint: "https://mcp.example.com/mcp?codemode=off",
+    name: "Acme MCP Portal",
+    auth: "oauth",
+    trustAnnotations: false,
+  },
   errorReporting: { enabled: true, environment: "production", release: "abc123" },
   resources: {
     blueprintsKvNamespaceId: "blueprints-kv-id",
@@ -74,6 +82,9 @@ async function baseConfigs(): Promise<BaseConfigs> {
     context: await baseConfig("../cloudflare-os/packages/gatekeeper-context/wrangler.jsonc"),
     scheduler: await baseConfig("../cloudflare-os/packages/gatekeeper-scheduler/wrangler.jsonc"),
     customGatekeeper: await baseConfig("../packages/custom-gatekeeper/wrangler.jsonc"),
+    mcpGatekeeper: await baseConfig("../cloudflare-os/packages/gatekeeper-mcp/wrangler.jsonc"),
+    mcpPortalGatekeeper: await baseConfig(
+      "../cloudflare-os/packages/gatekeeper-mcp-portal/wrangler.jsonc"),
     errorReporter: await baseConfig("../packages/error-reporter/wrangler.jsonc"),
   };
 }
@@ -225,6 +236,16 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
       service: "acme-cloudflare-os-custom",
       entrypoint: "GatekeeperVendor",
     },
+    {
+      binding: "GATEKEEPER_MCP",
+      service: "acme-cloudflare-os-mcp",
+      entrypoint: "GatekeeperVendor",
+    },
+    {
+      binding: "GATEKEEPER_MCP_PORTAL",
+      service: "acme-cloudflare-os-mcp-portal",
+      entrypoint: "GatekeeperVendor",
+    },
   ]);
   assert.deepEqual(generated.workshop.kv_namespaces, [
     { binding: "BLUEPRINTS", id: "blueprints-kv-id" },
@@ -268,6 +289,8 @@ test("gives the router the public route, the frontend, and every service binding
     { binding: "GATEKEEPER_CONTEXT", service: "acme-cloudflare-os-context" },
     { binding: "GATEKEEPER_SCHEDULER", service: "acme-cloudflare-os-scheduler" },
     { binding: "GATEKEEPER_CUSTOM", service: "acme-cloudflare-os-custom" },
+    { binding: "GATEKEEPER_MCP", service: "acme-cloudflare-os-mcp" },
+    { binding: "GATEKEEPER_MCP_PORTAL", service: "acme-cloudflare-os-mcp-portal" },
   ]);
   // Inherited untouched: the base config already carries the ASSETS binding, the SPA fallback, and
   // the /gatekeeper/* prefix an OAuth Gatekeeper redirect needs.
@@ -317,6 +340,77 @@ test("deploys the ambient Scheduler Gatekeeper the hosted flow preinstalls", asy
   assert.deepEqual(builds.map((args) => args.at(-1)), ["build:app", "build"]);
 });
 
+test("generates secure MCP Gatekeeper and Portal configs", async () => {
+  const bases = await baseConfigs();
+  const generated = generateConfigs(validConfig, bases);
+
+  assert.equal(generated.mcpGatekeeper.name, "acme-cloudflare-os-mcp");
+  assert.equal(generated.mcpPortalGatekeeper.name, "acme-cloudflare-os-mcp-portal");
+  assert.equal(generated.mcpGatekeeper.account_id, validConfig.accountId);
+  assert.deepEqual(generated.mcpGatekeeper.vars, {
+    BASE_URL: "https://os.example.com/gatekeeper/mcp",
+    MCP_ALLOW_INSECURE: "false",
+  });
+  assert.deepEqual(generated.mcpPortalGatekeeper.vars, {
+    BASE_URL: "https://os.example.com/gatekeeper/mcp-portal",
+    MCP_ALLOW_INSECURE: "false",
+    MCP_PORTAL_URL: "https://mcp.example.com/mcp?codemode=off",
+    MCP_PORTAL_NAME: "Acme MCP Portal",
+    MCP_PORTAL_AUTH: "oauth",
+    MCP_PORTAL_TRUST_ANNOTATIONS: "false",
+  });
+  assert.deepEqual(generated.mcpGatekeeper.migrations, bases.mcpGatekeeper.migrations);
+  assert.deepEqual(
+    generated.mcpPortalGatekeeper.migrations, bases.mcpPortalGatekeeper.migrations);
+  assert.ok(generated.mcpGatekeeper.compatibility_flags?.includes("global_fetch_strictly_public"));
+  assert.ok(
+    generated.mcpPortalGatekeeper.compatibility_flags?.includes("global_fetch_strictly_public"));
+  assert.equal(generated.mcpPortalGatekeeper.secrets, undefined);
+
+  const builds = buildCommands(validConfig)
+    .map(({ args }) => args)
+    .filter((args) => args.some((arg) => arg.includes("mcp-gatekeeper")) ||
+      args.some((arg) => arg.includes("mcp-portal-gatekeeper")));
+  assert.equal(builds.length, 2);
+  assert.deepEqual(builds.map((args) => args.at(-1)), ["build", "build"]);
+  assert.ok(builds.every((args) => args.at(-2) === "--no-cache"), builds.join("\n"));
+});
+
+test("rejects unsafe MCP Portal configuration", () => {
+  assert.throws(
+    () => validateConfig(variant((c) => { c.mcpPortal.endpoint = "http://mcp.example.com/mcp"; })),
+    /must use HTTPS/i);
+  assert.throws(
+    () => validateConfig(variant((c) => {
+      c.mcpPortal.endpoint = "https://user:secret@mcp.example.com/mcp";
+    })), /userinfo/i);
+  assert.throws(
+    () => validateConfig(variant((c) => {
+      c.mcpPortal.endpoint = "https://mcp.example.com/mcp#fragment";
+    })), /fragment/i);
+  assert.throws(
+    () => validateConfig(variant((c) => { c.mcpPortal.endpoint = "not-a-url"; })),
+    /valid HTTPS URL/i);
+  assert.throws(
+    () => validateConfig(variant((c) => { c.mcpPortal.auth = "basic"; })),
+    /auth must be none, oauth, or token/i);
+  assert.throws(
+    () => validateConfig(variant((c) => { c.mcpPortal.trustAnnotations = "false"; })),
+    /trustAnnotations must be a boolean/i);
+});
+
+test("requires the MCP Portal token only for token authentication", async () => {
+  const token = variant((c) => { c.mcpPortal.auth = "token"; });
+  const none = variant((c) => { c.mcpPortal.auth = "none"; });
+
+  assert.deepEqual(
+    generateConfigs(token, await baseConfigs()).mcpPortalGatekeeper.secrets,
+    { required: ["MCP_PORTAL_TOKEN"] });
+  assert.equal(
+    generateConfigs(none, await baseConfigs()).mcpPortalGatekeeper.secrets,
+    undefined);
+});
+
 test("keeps every Worker behind the router off the public internet", async () => {
   const generated = generateConfigs(validConfig, await baseConfigs());
   const workers = Object.entries(generated) as [string, ProdWranglerConfig][];
@@ -345,6 +439,12 @@ test("scopes PUBLIC_BASE_URL and Context sharing to the public origin", async ()
   assert.equal(derived.workshop.vars!.PUBLIC_BASE_URL, "https://os.example.com");
   assert.equal(
     explicit.workshop.vars!.PUBLIC_BASE_URL, "https://acme-cloudflare-os.acme.workers.dev");
+  assert.equal(
+    explicit.mcpGatekeeper.vars!.BASE_URL,
+    "https://acme-cloudflare-os.acme.workers.dev/gatekeeper/mcp");
+  assert.equal(
+    explicit.mcpPortalGatekeeper.vars!.BASE_URL,
+    "https://acme-cloudflare-os.acme.workers.dev/gatekeeper/mcp-portal");
   assert.equal(explicit.router.workers_dev, true);
   assert.equal(explicit.router.routes, undefined);
 

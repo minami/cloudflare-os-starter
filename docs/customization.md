@@ -33,6 +33,7 @@ The custom logo appears in the app chrome, sign-in screens, and browser tab on e
 | `aiGateway` | Deployment-managed model catalog | Enabled by default over the Workers AI binding; which providers to advertise, and which gateway |
 | `context` | Context sharing boundary, snapshot KV, and optional Artifacts repositories | `null` to scope data to the public origin, or a pinned stable label; automatic or existing KV; Git-backed collections disabled or enabled |
 | `customGatekeeper` | Example integration identity and guidance | Organization-specific display text |
+| `mcpPortal` | Administrator-selected MCP Server Portal | HTTPS endpoint, display name, authentication mode, and annotation trust policy |
 | `errorReporting` | Private explicit-issue destination | Console Reporter enabled state, environment, and release metadata |
 | `resources` | Blueprint/avatar KV and blueprint-content R2 | `null` to provision or explicit IDs/names to reuse |
 | `observability` | Worker telemetry | Structured logs, invocation logs, traces, and sampling; see the [observability guide](observability.md) |
@@ -41,7 +42,7 @@ Secrets are never valid values in this file. Install them interactively with Wra
 
 ### Workers and routing
 
-The deployment is six Workers. Keep their names unique: service bindings use these names, so update and deploy them together.
+The deployment is eight Workers. Keep their names unique: service bindings use these names, so update and deploy them together.
 
 | Worker | Role |
 | --- | --- |
@@ -50,11 +51,13 @@ The deployment is six Workers. Keep their names unique: service bindings use the
 | `context` | The Context Gatekeeper. |
 | `scheduler` | The Scheduler Gatekeeper, which gives agents scheduled and recurring work. |
 | `customGatekeeper` | This repository's example integration. |
+| `mcpGatekeeper` | Generic MCP endpoints selected by individual users. |
+| `mcpPortalGatekeeper` | One administrator-selected MCP Server Portal. |
 | `errorReporter` | The private explicit-issue destination. |
 
 Context and Scheduler are *ambient*: upstream's release marks both `PREINSTALL`, so the hosted flow installs them on every instance and this starter deploys them for the same reason. Neither takes configuration beyond its name — the Scheduler takes none at all.
 
-Only the router takes a route; the other five are reachable only over service bindings, and the deploy turns off `workers.dev` and [Preview URLs](https://developers.cloudflare.com/workers/configuration/previews/) on all six. That keeps the router the single Access-protected way in.
+Only the router takes a route; the other seven are reachable only over service bindings, and the deploy turns off `workers.dev` and [Preview URLs](https://developers.cloudflare.com/workers/configuration/previews/) on all eight. That keeps the router the single Access-protected way in.
 
 For production, set a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) on it:
 
@@ -72,6 +75,24 @@ The hostname must belong to an active Cloudflare zone and cannot conflict with a
 `publicBaseUrl` is required there, because nothing in `deployment.jsonc` knows your account's `workers.dev` subdomain. If using workers.dev that value must be `https://<router-name>.<subdomain>.workers.dev`. Two things read the origin — `PUBLIC_BASE_URL`, which upstream builds absolute links and OAuth redirect URIs from, and the Context sharing boundary under [Storage](#storage) — so a typo here would deploy successfully and then hide existing Context data and break every redirect.
 
 On a custom domain the hostname is yours and has nothing to do with any Worker name, so `pnpm check` compares `publicBaseUrl` against `customDomain` instead: leave it `null` and the deploy derives the origin from the domain, or set it to exactly `https://<customDomain>`.
+
+### MCP Gatekeepers
+
+The Generic MCP Gatekeeper lets users connect Streamable HTTP MCP endpoints. The Portal Gatekeeper exposes one endpoint selected by the deployment administrator. Both reject insecure endpoints in production and retain `global_fetch_strictly_public`, so DNS resolution cannot route requests to private or metadata addresses.
+
+Configure the Portal with an HTTPS endpoint containing no userinfo or fragment. `auth` accepts `oauth`, `none`, or `token`. Keep `trustAnnotations` false unless every upstream server behind the Portal is trusted to classify read-only tools correctly; untrusted write-capable tools then remain subject to approval.
+
+For `token` authentication, install `MCP_PORTAL_TOKEN` interactively on the Portal Gatekeeper Worker, pinning the account from `deployment.jsonc`:
+
+```sh
+CLOUDFLARE_ACCOUNT_ID=<CLOUDFLARE_ACCOUNT_ID> pnpm exec wrangler secret put MCP_PORTAL_TOKEN --name <MCP_PORTAL_GATEKEEPER_WORKER_NAME>
+```
+
+If authentication later changes away from `token`, Wrangler does not remove the old secret automatically. Delete it explicitly with the same account pin:
+
+```sh
+CLOUDFLARE_ACCOUNT_ID=<CLOUDFLARE_ACCOUNT_ID> pnpm exec wrangler secret delete MCP_PORTAL_TOKEN --name <MCP_PORTAL_GATEKEEPER_WORKER_NAME>
+```
 
 ### Sign-in methods
 

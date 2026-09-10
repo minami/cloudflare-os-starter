@@ -20,6 +20,9 @@ export type AiGatewayProvider = "anthropic" | "openai" | "google" | "cloudflare"
 export const AI_GATEWAY_PROVIDERS: readonly AiGatewayProvider[] =
   ["anthropic", "openai", "google", "cloudflare"];
 
+/** Authentication modes supported by the administrator-configured MCP portal. */
+export type McpPortalAuth = "none" | "oauth" | "token";
+
 /**
  * The public address of the router Worker. Exactly one field is set; `validateConfig` enforces
  * that, since wrangler would otherwise happily deploy both a custom domain and a workers.dev route.
@@ -112,6 +115,8 @@ export interface DeploymentConfig {
     context: { name: string };
     scheduler: { name: string };
     customGatekeeper: { name: string };
+    mcpGatekeeper: { name: string };
+    mcpPortalGatekeeper: { name: string };
     /** Only required when `errorReporting.enabled`. */
     errorReporter?: { name: string };
   };
@@ -120,6 +125,13 @@ export interface DeploymentConfig {
   context: ContextConfig;
   /** Display text the example custom Gatekeeper serves to agents. */
   customGatekeeper: { name: string; message: string };
+  /** The single administrator-selected MCP Server Portal exposed to users. */
+  mcpPortal: {
+    endpoint: string;
+    name: string;
+    auth: McpPortalAuth;
+    trustAnnotations: boolean;
+  };
   /** Private explicit-issue destination. */
   errorReporting: { enabled: boolean; environment?: string; release?: string | null };
   /** Workshop KV/R2. `null` requests Wrangler automatic provisioning. */
@@ -182,6 +194,8 @@ export interface GeneratedConfigs {
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
+  mcpGatekeeper: ProdWranglerConfig;
+  mcpPortalGatekeeper: ProdWranglerConfig;
   /** Absent when `errorReporting.enabled` is false. */
   errorReporter?: ProdWranglerConfig;
 }
@@ -193,6 +207,8 @@ export interface BaseConfigs {
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
+  mcpGatekeeper: ProdWranglerConfig;
+  mcpPortalGatekeeper: ProdWranglerConfig;
   errorReporter: ProdWranglerConfig;
 }
 

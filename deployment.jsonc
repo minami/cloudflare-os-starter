@@ -29,10 +29,12 @@
     "context": { "name": "<CONTEXT_WORKER_NAME>" },
 
     // The Scheduler Gatekeeper, which gives agents scheduled and recurring work. Ambient like
-    // the Context Gatekeeper
+    // the Context Gatekeeper.
     "scheduler": { "name": "<SCHEDULER_WORKER_NAME>" },
 
     "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
+    "mcpGatekeeper": { "name": "<MCP_GATEKEEPER_WORKER_NAME>" },
+    "mcpPortalGatekeeper": { "name": "<MCP_PORTAL_GATEKEEPER_WORKER_NAME>" },
     "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
   },
 
@@ -53,24 +55,14 @@
   // Reference: docs/customization.md#ai-models
   "aiGateway": {
     "enabled": true,
-
-    // Your account's AI Gateway. "default" is the one Cloudflare creates for the account.
-    // Migrating from the hosted deploy? Use the gateway that flow created: "<instance>-ai"
-    // (e.g. "cloudflareos-ai"), named after your instance. See docs/migrate-from-hosted.md.
     "name": "default",
-
-    // null reuses the top-level accountId. Set only if the gateway lives in another account --
-    // that requires CF_AI_GATEWAY_API_TOKEN, since the binding cannot reach across accounts.
     "accountId": null,
-
-    // "cloudflare" is Workers AI, which needs no key of your own. anthropic/openai need keys
-    // stored on the gateway; "google" additionally requires CF_AI_GATEWAY_API_TOKEN.
     "providers": ["cloudflare"]
   },
 
   "context": {
     // Isolates Context data shared by this Workshop deployment.
-    // null scopes it to the public origin
+    // null scopes it to the public origin.
     "sharingDomain": null,
 
     // null: Wrangler provisions and remembers a KV namespace on first deploy.
@@ -81,7 +73,6 @@
     // kvNamespaceId and uncomment this object. Requires Artifacts account access.
     // "artifacts": {
     //   "enabled": true,
-    //   // Optional override; defaults to "gatekeeper-context-collections".
     //   "namespace": "custom-context-collections"
     // }
   },
@@ -91,6 +82,17 @@
   "customGatekeeper": {
     "name": "<ORGANIZATION_DISPLAY_NAME>",
     "message": "<ORGANIZATION_GUIDANCE>"
+  },
+
+  // One administrator-selected Streamable HTTP MCP Server Portal. The endpoint must use HTTPS and
+  // must not contain userinfo or a fragment. auth is "oauth", "none", or "token". token mode
+  // requires MCP_PORTAL_TOKEN on the Portal Gatekeeper Worker. Keep trustAnnotations false unless
+  // every upstream server behind the portal is trusted to classify its own tools correctly.
+  "mcpPortal": {
+    "endpoint": "https://mcp.example.com/mcp",
+    "name": "<MCP_PORTAL_DISPLAY_NAME>",
+    "auth": "oauth",
+    "trustAnnotations": false
   },
 
   // Explicit backend issue reports go to a private Worker that emits structured console errors.

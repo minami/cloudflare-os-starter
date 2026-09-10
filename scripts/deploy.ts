@@ -25,6 +25,8 @@ const packageDirs = {
   context: "cloudflare-os/packages/gatekeeper-context",
   scheduler: "cloudflare-os/packages/gatekeeper-scheduler",
   customGatekeeper: "packages/custom-gatekeeper",
+  mcpGatekeeper: "cloudflare-os/packages/gatekeeper-mcp",
+  mcpPortalGatekeeper: "cloudflare-os/packages/gatekeeper-mcp-portal",
   errorReporter: "packages/error-reporter",
 } as const;
 const generatedPaths = Object.fromEntries(
@@ -40,6 +42,8 @@ const requiredPaths = [
   "workers.context.name",
   "workers.scheduler.name",
   "workers.customGatekeeper.name",
+  "workers.mcpGatekeeper.name",
+  "workers.mcpPortalGatekeeper.name",
   "access.issuer",
   "access.audience",
   "access.admins",
@@ -47,6 +51,10 @@ const requiredPaths = [
   "errorReporting.enabled",
   "customGatekeeper.name",
   "customGatekeeper.message",
+  "mcpPortal.endpoint",
+  "mcpPortal.name",
+  "mcpPortal.auth",
+  "mcpPortal.trustAnnotations",
   "observability.enabled",
   "observability.headSamplingRate",
   "observability.logs.invocationLogs",
@@ -197,6 +205,7 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     "aiGateway.enabled",
     "aiGateway.providers",
     "errorReporting.enabled",
+    "mcpPortal.trustAnnotations",
     "observability.enabled",
     "observability.headSamplingRate",
     "observability.logs.invocationLogs",
@@ -217,7 +226,7 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     .map(([, worker]) => worker.name);
   if (new Set(workerNames).size !== workerNames.length) {
     throw new Error(
-      "Router, Workshop, Context, Scheduler, and custom Gatekeeper names must be unique.");
+      "All Worker names must be unique.");
   }
   if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
@@ -263,6 +272,28 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   }
 
   validateAiGateway(config);
+
+  if (!["none", "oauth", "token"].includes(config.mcpPortal.auth)) {
+    throw new Error("MCP Portal auth must be none, oauth, or token.");
+  }
+  if (typeof config.mcpPortal.trustAnnotations !== "boolean") {
+    throw new Error("MCP Portal trustAnnotations must be a boolean.");
+  }
+  let portalUrl: URL;
+  try {
+    portalUrl = new URL(config.mcpPortal.endpoint);
+  } catch {
+    throw new Error("MCP Portal endpoint must be a valid HTTPS URL.");
+  }
+  if (portalUrl.protocol !== "https:") {
+    throw new Error("MCP Portal endpoint must use HTTPS.");
+  }
+  if (portalUrl.username || portalUrl.password) {
+    throw new Error("MCP Portal endpoint must not contain userinfo.");
+  }
+  if (portalUrl.hash) {
+    throw new Error("MCP Portal endpoint must not contain a fragment.");
+  }
 
   if (typeof config.errorReporting.enabled !== "boolean") {
     throw new Error("Error reporting enabled must be a boolean.");
@@ -435,6 +466,8 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   const context = structuredClone(bases.context);
   const scheduler = structuredClone(bases.scheduler);
   const customGatekeeper = structuredClone(bases.customGatekeeper);
+  const mcpGatekeeper = structuredClone(bases.mcpGatekeeper);
+  const mcpPortalGatekeeper = structuredClone(bases.mcpPortalGatekeeper);
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
@@ -448,6 +481,8 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     { binding: "GATEKEEPER_CONTEXT", service: config.workers.context.name },
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
     { binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name },
+    { binding: "GATEKEEPER_MCP", service: config.workers.mcpGatekeeper.name },
+    { binding: "GATEKEEPER_MCP_PORTAL", service: config.workers.mcpPortalGatekeeper.name },
   ];
 
   setCommon(workshop, config, config.workers.workshop.name);
@@ -513,6 +548,16 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       service: config.workers.customGatekeeper.name,
       entrypoint: "GatekeeperVendor",
     },
+    {
+      binding: "GATEKEEPER_MCP",
+      service: config.workers.mcpGatekeeper.name,
+      entrypoint: "GatekeeperVendor",
+    },
+    {
+      binding: "GATEKEEPER_MCP_PORTAL",
+      service: config.workers.mcpPortalGatekeeper.name,
+      entrypoint: "GatekeeperVendor",
+    },
   ];
   workshop.kv_namespaces = [
     { binding: "BLUEPRINTS", ...(config.resources.blueprintsKvNamespaceId
@@ -552,12 +597,33 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     CUSTOM_MESSAGE: config.customGatekeeper.message,
   };
 
+  setCommon(mcpGatekeeper, config, config.workers.mcpGatekeeper.name);
+  mcpGatekeeper.vars = {
+    BASE_URL: `${origin}/gatekeeper/mcp`,
+    MCP_ALLOW_INSECURE: "false",
+  };
+
+  setCommon(mcpPortalGatekeeper, config, config.workers.mcpPortalGatekeeper.name);
+  mcpPortalGatekeeper.vars = {
+    BASE_URL: `${origin}/gatekeeper/mcp-portal`,
+    MCP_ALLOW_INSECURE: "false",
+    MCP_PORTAL_URL: config.mcpPortal.endpoint,
+    MCP_PORTAL_NAME: config.mcpPortal.name,
+    MCP_PORTAL_AUTH: config.mcpPortal.auth,
+    MCP_PORTAL_TRUST_ANNOTATIONS: String(config.mcpPortal.trustAnnotations),
+  };
+  if (config.mcpPortal.auth === "token") {
+    mcpPortalGatekeeper.secrets = { required: ["MCP_PORTAL_TOKEN"] };
+  } else {
+    delete mcpPortalGatekeeper.secrets;
+  }
+
   if (errorReporter) {
     setCommon(errorReporter, config, config.workers.errorReporter!.name);
   }
 
   return {
-    router, workshop, context, scheduler, customGatekeeper,
+    router, workshop, context, scheduler, customGatekeeper, mcpGatekeeper, mcpPortalGatekeeper,
     ...(errorReporter && { errorReporter }),
   };
 }
@@ -605,6 +671,8 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[] {
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
     { args: ownBuild("custom-gatekeeper") },
+    { args: submoduleBuild("@gadgets/mcp-gatekeeper") },
+    { args: submoduleBuild("@gadgets/mcp-portal-gatekeeper") },
     ...(config.errorReporting.enabled ? [{ args: ownBuild("error-reporter") }] : []),
     // Access mode is a build-time constant in the frontend bundle (`src/useAuth.ts`), so it is set
     // here rather than inherited: a bundle built under a different value is wrong, not just stale.
@@ -720,6 +788,9 @@ async function main(): Promise<void> {
     context: await readJsonc(join(root, packageDirs.context, "wrangler.jsonc")),
     scheduler: await readJsonc(join(root, packageDirs.scheduler, "wrangler.jsonc")),
     customGatekeeper: await readJsonc(join(root, packageDirs.customGatekeeper, "wrangler.jsonc")),
+    mcpGatekeeper: await readJsonc(join(root, packageDirs.mcpGatekeeper, "wrangler.jsonc")),
+    mcpPortalGatekeeper: await readJsonc(
+      join(root, packageDirs.mcpPortalGatekeeper, "wrangler.jsonc")),
     errorReporter: await readJsonc(join(root, packageDirs.errorReporter, "wrangler.jsonc")),
   });
   reportAiGateway(config);
@@ -740,6 +811,8 @@ async function main(): Promise<void> {
     deployWorker(packageDirs.context, deployArgs);
     deployWorker(packageDirs.scheduler, deployArgs);
     deployWorker(packageDirs.customGatekeeper, deployArgs);
+    deployWorker(packageDirs.mcpGatekeeper, deployArgs);
+    deployWorker(packageDirs.mcpPortalGatekeeper, deployArgs);
     deployWorker(packageDirs.workshop, deployArgs);
     // Last: it binds every one of the above.
     deployWorker(packageDirs.router, deployArgs);
