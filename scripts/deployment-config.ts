@@ -115,6 +115,7 @@ export interface DeploymentConfig {
     context: { name: string };
     scheduler: { name: string };
     customGatekeeper: { name: string };
+    googleGatekeeper: { name: string };
     mcpGatekeeper: { name: string };
     mcpPortalGatekeeper: { name: string };
     /** Only required when `errorReporting.enabled`. */
@@ -194,6 +195,7 @@ export interface GeneratedConfigs {
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
+  googleGatekeeper: ProdWranglerConfig;
   mcpGatekeeper: ProdWranglerConfig;
   mcpPortalGatekeeper: ProdWranglerConfig;
   /** Absent when `errorReporting.enabled` is false. */
@@ -207,6 +209,7 @@ export interface BaseConfigs {
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
+  googleGatekeeper: ProdWranglerConfig;
   mcpGatekeeper: ProdWranglerConfig;
   mcpPortalGatekeeper: ProdWranglerConfig;
   errorReporter: ProdWranglerConfig;

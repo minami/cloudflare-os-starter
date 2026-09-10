@@ -33,6 +33,7 @@ The custom logo appears in the app chrome, sign-in screens, and browser tab on e
 | `aiGateway` | Deployment-managed model catalog | Enabled by default over the Workers AI binding; which providers to advertise, and which gateway |
 | `context` | Context sharing boundary, snapshot KV, and optional Artifacts repositories | `null` to scope data to the public origin, or a pinned stable label; automatic or existing KV; Git-backed collections disabled or enabled |
 | `customGatekeeper` | Example integration identity and guidance | Organization-specific display text |
+| `workers.googleGatekeeper.name` | Google OAuth Gatekeeper identity | A stable private Worker name |
 | `mcpPortal` | Administrator-selected MCP Server Portal | HTTPS endpoint, display name, authentication mode, and annotation trust policy |
 | `errorReporting` | Private explicit-issue destination | Console Reporter enabled state, environment, and release metadata |
 | `resources` | Blueprint/avatar KV and blueprint-content R2 | `null` to provision or explicit IDs/names to reuse |
@@ -42,7 +43,7 @@ Secrets are never valid values in this file. Install them interactively with Wra
 
 ### Workers and routing
 
-The deployment is eight Workers. Keep their names unique: service bindings use these names, so update and deploy them together.
+The deployment is nine Workers. Keep their names unique: service bindings use these names, so update and deploy them together.
 
 | Worker | Role |
 | --- | --- |
@@ -51,13 +52,14 @@ The deployment is eight Workers. Keep their names unique: service bindings use t
 | `context` | The Context Gatekeeper. |
 | `scheduler` | The Scheduler Gatekeeper, which gives agents scheduled and recurring work. |
 | `customGatekeeper` | This repository's example integration. |
+| `googleGatekeeper` | Google OAuth resources for Gmail, Drive, Docs, Sheets, Calendar, and BigQuery. |
 | `mcpGatekeeper` | Generic MCP endpoints selected by individual users. |
 | `mcpPortalGatekeeper` | One administrator-selected MCP Server Portal. |
 | `errorReporter` | The private explicit-issue destination. |
 
 Context and Scheduler are *ambient*: upstream's release marks both `PREINSTALL`, so the hosted flow installs them on every instance and this starter deploys them for the same reason. Neither takes configuration beyond its name — the Scheduler takes none at all.
 
-Only the router takes a route; the other seven are reachable only over service bindings, and the deploy turns off `workers.dev` and [Preview URLs](https://developers.cloudflare.com/workers/configuration/previews/) on all eight. That keeps the router the single Access-protected way in.
+Only the router takes a route; the other eight are reachable only over service bindings, and the deploy turns off `workers.dev` and [Preview URLs](https://developers.cloudflare.com/workers/configuration/previews/) on all nine. That keeps the router the single Access-protected way in.
 
 For production, set a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) on it:
 
@@ -93,6 +95,29 @@ If authentication later changes away from `token`, Wrangler does not remove the 
 ```sh
 CLOUDFLARE_ACCOUNT_ID=<CLOUDFLARE_ACCOUNT_ID> pnpm exec wrangler secret delete MCP_PORTAL_TOKEN --name <MCP_PORTAL_GATEKEEPER_WORKER_NAME>
 ```
+
+### Google Gatekeeper
+
+Create a Google OAuth Web application and register `<publicBaseUrl>/gatekeeper/google/oauth` as an authorized redirect URI. Enable the Gmail, Drive, Docs, Sheets, Calendar, and BigQuery APIs for the Google Cloud project.
+
+A new Worker must exist before Wrangler can attach secrets, while the normal generated config refuses to deploy without them. Run the one-time bootstrap command first. It deploys only the private Google Gatekeeper with no route, service binding, or credentials. The command refuses to overwrite an existing Worker:
+
+```sh
+pnpm check
+pnpm bootstrap:google
+```
+
+Then install both credentials interactively and run the full deployment:
+
+```sh
+CLOUDFLARE_ACCOUNT_ID=<CLOUDFLARE_ACCOUNT_ID> pnpm exec wrangler secret put CLIENT_ID --name <GOOGLE_GATEKEEPER_WORKER_NAME>
+CLOUDFLARE_ACCOUNT_ID=<CLOUDFLARE_ACCOUNT_ID> pnpm exec wrangler secret put CLIENT_SECRET --name <GOOGLE_GATEKEEPER_WORKER_NAME>
+pnpm deploy
+```
+
+The Gatekeeper is bound to the Workshop for vendor RPC and to the router for OAuth HTTP callbacks. It is not listed in `AUTH_GATEKEEPERS`, so adding it does not add Google as a sign-in method: Cloudflare Access remains the authentication boundary.
+
+Google OAuth applications in External Testing status issue refresh tokens that expire after seven days when non-basic scopes are requested. Complete testing with a Test User, then review Google's publishing and sensitive or restricted scope requirements before relying on a persistent connection.
 
 ### Sign-in methods
 
