@@ -25,6 +25,7 @@ const packageDirs = {
   context: "cloudflare-os/packages/gatekeeper-context",
   scheduler: "cloudflare-os/packages/gatekeeper-scheduler",
   customGatekeeper: "packages/custom-gatekeeper",
+  googleGatekeeper: "cloudflare-os/packages/gatekeeper-google",
   mcpGatekeeper: "cloudflare-os/packages/gatekeeper-mcp",
   mcpPortalGatekeeper: "cloudflare-os/packages/gatekeeper-mcp-portal",
   errorReporter: "packages/error-reporter",
@@ -42,6 +43,7 @@ const requiredPaths = [
   "workers.context.name",
   "workers.scheduler.name",
   "workers.customGatekeeper.name",
+  "workers.googleGatekeeper.name",
   "workers.mcpGatekeeper.name",
   "workers.mcpPortalGatekeeper.name",
   "access.issuer",
@@ -466,6 +468,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   const context = structuredClone(bases.context);
   const scheduler = structuredClone(bases.scheduler);
   const customGatekeeper = structuredClone(bases.customGatekeeper);
+  const googleGatekeeper = structuredClone(bases.googleGatekeeper);
   const mcpGatekeeper = structuredClone(bases.mcpGatekeeper);
   const mcpPortalGatekeeper = structuredClone(bases.mcpPortalGatekeeper);
   const errorReporter = config.errorReporting.enabled
@@ -481,6 +484,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     { binding: "GATEKEEPER_CONTEXT", service: config.workers.context.name },
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
     { binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name },
+    { binding: "GATEKEEPER_GOOGLE", service: config.workers.googleGatekeeper.name },
     { binding: "GATEKEEPER_MCP", service: config.workers.mcpGatekeeper.name },
     { binding: "GATEKEEPER_MCP_PORTAL", service: config.workers.mcpPortalGatekeeper.name },
   ];
@@ -549,6 +553,11 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       entrypoint: "GatekeeperVendor",
     },
     {
+      binding: "GATEKEEPER_GOOGLE",
+      service: config.workers.googleGatekeeper.name,
+      entrypoint: "GatekeeperVendor",
+    },
+    {
       binding: "GATEKEEPER_MCP",
       service: config.workers.mcpGatekeeper.name,
       entrypoint: "GatekeeperVendor",
@@ -597,6 +606,12 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     CUSTOM_MESSAGE: config.customGatekeeper.message,
   };
 
+  setCommon(googleGatekeeper, config, config.workers.googleGatekeeper.name);
+  googleGatekeeper.vars = {
+    BASE_URL: `${origin}/gatekeeper/google`,
+  };
+  googleGatekeeper.secrets = { required: ["CLIENT_ID", "CLIENT_SECRET"] };
+
   setCommon(mcpGatekeeper, config, config.workers.mcpGatekeeper.name);
   mcpGatekeeper.vars = {
     BASE_URL: `${origin}/gatekeeper/mcp`,
@@ -623,7 +638,8 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   }
 
   return {
-    router, workshop, context, scheduler, customGatekeeper, mcpGatekeeper, mcpPortalGatekeeper,
+    router, workshop, context, scheduler, customGatekeeper, googleGatekeeper, mcpGatekeeper,
+    mcpPortalGatekeeper,
     ...(errorReporter && { errorReporter }),
   };
 }
@@ -671,6 +687,7 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[] {
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
     { args: ownBuild("custom-gatekeeper") },
+    { args: submoduleBuild("@gadgets/google-gatekeeper") },
     { args: submoduleBuild("@gadgets/mcp-gatekeeper") },
     { args: submoduleBuild("@gadgets/mcp-portal-gatekeeper") },
     ...(config.errorReporting.enabled ? [{ args: ownBuild("error-reporter") }] : []),
@@ -680,6 +697,13 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[] {
     { args: submoduleBuild("@gadgets/router") },
     { args: submoduleBuild("@gadgets/workshop-backend") },
   ];
+}
+
+/** Removes required-secret validation only for the first private Worker deployment. */
+export function googleBootstrapConfig(config: ProdWranglerConfig): ProdWranglerConfig {
+  const bootstrap = structuredClone(config);
+  delete bootstrap.secrets;
+  return bootstrap;
 }
 
 // `allowTrailingComma` because wrangler accepts them and upstream uses them: the Scheduler's base
@@ -746,6 +770,33 @@ function deployWorker(dir: string, extraArgs: string[]): void {
   }
 }
 
+/** Whether Wrangler's deployments lookup says the named Worker has not been created yet. */
+export function workerMissingFromOutput(output: string): boolean {
+  return /\[code:\s*10007\]/.test(output) ||
+    /Worker .* not found/i.test(output) ||
+    /Worker does not exist on your account/i.test(output);
+}
+
+function requireMissingWorker(dir: string, name: string): void {
+  const cwd = join(root, dir);
+  const args = ["deployments", "list", "--config", generatedName, "--name", name, "--json"];
+  const entry = resolveBinEntry(cwd, "wrangler");
+  const [command, argv] = entry
+    ? [process.execPath, [entry, ...args]]
+    : pnpmCommand(["exec", "wrangler", ...args], process.env);
+  const result = spawnSync(command, argv, { cwd, env: process.env, encoding: "utf8" });
+  if (result.error) throw result.error;
+  if (result.status === 0) {
+    throw new Error(
+      `Google bootstrap refused: Worker "${name}" already exists. Install or update its secrets ` +
+      "and run pnpm deploy instead.");
+  }
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  if (!workerMissingFromOutput(output)) {
+    throw new Error(`Could not check whether Worker "${name}" exists. ${output.trim()}`);
+  }
+}
+
 function requireSubmodule(): void {
   if (!existsSync(join(root, "cloudflare-os/package.json"))) {
     throw new Error("CloudflareOS submodule is not initialized. Run git submodule update --init.");
@@ -788,6 +839,7 @@ async function main(): Promise<void> {
     context: await readJsonc(join(root, packageDirs.context, "wrangler.jsonc")),
     scheduler: await readJsonc(join(root, packageDirs.scheduler, "wrangler.jsonc")),
     customGatekeeper: await readJsonc(join(root, packageDirs.customGatekeeper, "wrangler.jsonc")),
+    googleGatekeeper: await readJsonc(join(root, packageDirs.googleGatekeeper, "wrangler.jsonc")),
     mcpGatekeeper: await readJsonc(join(root, packageDirs.mcpGatekeeper, "wrangler.jsonc")),
     mcpPortalGatekeeper: await readJsonc(
       join(root, packageDirs.mcpPortalGatekeeper, "wrangler.jsonc")),
@@ -801,10 +853,24 @@ async function main(): Promise<void> {
         generatedPaths[name as keyof typeof generatedPaths],
         JSON.stringify(generatedConfig, null, 2) + "\n");
     }
+    if (process.argv.includes("--bootstrap-google")) {
+      requireMissingWorker(packageDirs.googleGatekeeper, config.workers.googleGatekeeper.name);
+      await writeFile(
+        generatedPaths.googleGatekeeper,
+        JSON.stringify(googleBootstrapConfig(generated.googleGatekeeper), null, 2) + "\n");
+      run(submoduleBuild("@gadgets/google-gatekeeper"));
+      deployWorker(packageDirs.googleGatekeeper, []);
+      console.warn(
+        `\nGoogle Gatekeeper created without OAuth credentials. Install CLIENT_ID and ` +
+        `CLIENT_SECRET on ${config.workers.googleGatekeeper.name}, then run pnpm deploy.\n`);
+      return;
+    }
     const check = process.argv.includes("--check");
     if (check) run(["test"]);
     build(config);
     const deployArgs = check ? ["--dry-run"] : [];
+    // First mutation: missing Google secrets fail before any existing Worker is updated.
+    deployWorker(packageDirs.googleGatekeeper, deployArgs);
     if (config.errorReporting.enabled) {
       deployWorker(packageDirs.errorReporter, deployArgs);
     }

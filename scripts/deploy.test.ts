@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { parse, type ParseError } from "jsonc-parser";
-import { aiGatewayPlan, buildCommands, generateConfigs, validateConfig } from "./deploy.ts";
+import {
+  aiGatewayPlan,
+  buildCommands,
+  generateConfigs,
+  googleBootstrapConfig,
+  validateConfig,
+  workerMissingFromOutput,
+} from "./deploy.ts";
 import type {
   BaseConfigs,
   DeploymentConfig,
@@ -19,6 +26,7 @@ const validConfig: DeploymentConfig = {
     context: { name: "acme-cloudflare-os-context" },
     scheduler: { name: "acme-cloudflare-os-scheduler" },
     customGatekeeper: { name: "acme-cloudflare-os-custom" },
+    googleGatekeeper: { name: "acme-cloudflare-os-google" },
     mcpGatekeeper: { name: "acme-cloudflare-os-mcp" },
     mcpPortalGatekeeper: { name: "acme-cloudflare-os-mcp-portal" },
     errorReporter: { name: "acme-cloudflare-os-errors" },
@@ -82,6 +90,8 @@ async function baseConfigs(): Promise<BaseConfigs> {
     context: await baseConfig("../cloudflare-os/packages/gatekeeper-context/wrangler.jsonc"),
     scheduler: await baseConfig("../cloudflare-os/packages/gatekeeper-scheduler/wrangler.jsonc"),
     customGatekeeper: await baseConfig("../packages/custom-gatekeeper/wrangler.jsonc"),
+    googleGatekeeper: await baseConfig(
+      "../cloudflare-os/packages/gatekeeper-google/wrangler.jsonc"),
     mcpGatekeeper: await baseConfig("../cloudflare-os/packages/gatekeeper-mcp/wrangler.jsonc"),
     mcpPortalGatekeeper: await baseConfig(
       "../cloudflare-os/packages/gatekeeper-mcp-portal/wrangler.jsonc"),
@@ -237,6 +247,11 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
       entrypoint: "GatekeeperVendor",
     },
     {
+      binding: "GATEKEEPER_GOOGLE",
+      service: "acme-cloudflare-os-google",
+      entrypoint: "GatekeeperVendor",
+    },
+    {
       binding: "GATEKEEPER_MCP",
       service: "acme-cloudflare-os-mcp",
       entrypoint: "GatekeeperVendor",
@@ -289,6 +304,7 @@ test("gives the router the public route, the frontend, and every service binding
     { binding: "GATEKEEPER_CONTEXT", service: "acme-cloudflare-os-context" },
     { binding: "GATEKEEPER_SCHEDULER", service: "acme-cloudflare-os-scheduler" },
     { binding: "GATEKEEPER_CUSTOM", service: "acme-cloudflare-os-custom" },
+    { binding: "GATEKEEPER_GOOGLE", service: "acme-cloudflare-os-google" },
     { binding: "GATEKEEPER_MCP", service: "acme-cloudflare-os-mcp" },
     { binding: "GATEKEEPER_MCP_PORTAL", service: "acme-cloudflare-os-mcp-portal" },
   ]);
@@ -376,6 +392,54 @@ test("generates secure MCP Gatekeeper and Portal configs", async () => {
   assert.ok(builds.every((args) => args.at(-2) === "--no-cache"), builds.join("\n"));
 });
 
+test("generates the Google Gatekeeper without enabling Google sign-in", async () => {
+  const bases = await baseConfigs();
+  const generated = generateConfigs(validConfig, bases);
+
+  assert.equal(generated.googleGatekeeper.name, "acme-cloudflare-os-google");
+  assert.equal(generated.googleGatekeeper.account_id, validConfig.accountId);
+  assert.deepEqual(generated.googleGatekeeper.vars, {
+    BASE_URL: "https://os.example.com/gatekeeper/google",
+  });
+  assert.deepEqual(generated.googleGatekeeper.secrets, {
+    required: ["CLIENT_ID", "CLIENT_SECRET"],
+  });
+  assert.deepEqual(generated.googleGatekeeper.migrations, bases.googleGatekeeper.migrations);
+  assert.deepEqual(
+    generated.googleGatekeeper.migrations?.map((migration) => migration.tag),
+    ["v0", "v1", "v2", "v3", "v4"]);
+  assert.equal(generated.workshop.vars!.AUTH_GATEKEEPERS, undefined);
+
+  const builds = buildCommands(validConfig)
+    .map(({ args }) => args)
+    .filter((args) => args.includes("@gadgets/google-gatekeeper"));
+  assert.equal(builds.length, 1);
+  assert.equal(builds[0].at(-1), "build");
+  assert.equal(builds[0].at(-2), "--no-cache");
+});
+
+test("bootstraps only by omitting required-secret validation", async () => {
+  const generated = generateConfigs(validConfig, await baseConfigs());
+  const bootstrap = googleBootstrapConfig(generated.googleGatekeeper);
+
+  assert.equal(bootstrap.secrets, undefined);
+  assert.deepEqual(generated.googleGatekeeper.secrets, {
+    required: ["CLIENT_ID", "CLIENT_SECRET"],
+  });
+  assert.equal(bootstrap.name, generated.googleGatekeeper.name);
+  assert.equal(bootstrap.workers_dev, false);
+  assert.equal(bootstrap.preview_urls, false);
+  assert.equal(bootstrap.routes, undefined);
+  assert.deepEqual(bootstrap.migrations, generated.googleGatekeeper.migrations);
+});
+
+test("recognizes Wrangler responses for a missing bootstrap Worker", () => {
+  assert.equal(workerMissingFromOutput("Worker \"google\" not found."), true);
+  assert.equal(workerMissingFromOutput("This Worker does not exist on your account. [code: 10007]"),
+    true);
+  assert.equal(workerMissingFromOutput("Authentication error [code: 10000]"), false);
+});
+
 test("rejects unsafe MCP Portal configuration", () => {
   assert.throws(
     () => validateConfig(variant((c) => { c.mcpPortal.endpoint = "http://mcp.example.com/mcp"; })),
@@ -445,6 +509,9 @@ test("scopes PUBLIC_BASE_URL and Context sharing to the public origin", async ()
   assert.equal(
     explicit.mcpPortalGatekeeper.vars!.BASE_URL,
     "https://acme-cloudflare-os.acme.workers.dev/gatekeeper/mcp-portal");
+  assert.equal(
+    explicit.googleGatekeeper.vars!.BASE_URL,
+    "https://acme-cloudflare-os.acme.workers.dev/gatekeeper/google");
   assert.equal(explicit.router.workers_dev, true);
   assert.equal(explicit.router.routes, undefined);
 
