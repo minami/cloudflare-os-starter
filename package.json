@@ -8,7 +8,8 @@
   },
   "scripts": {
     "build": "vp run -r --cache build",
-    "test": "node --test 'scripts/**/*.test.ts' && vp run --filter '!cloudflare-os-starter' --cache test",
+    "test": "node --test 'scripts/**/*.test.ts' && vp run --filter '!cloudflare-os-starter' --filter '!@gadgets/scripts' --cache test && pnpm run test:mcp",
+    "test:mcp": "pnpm --dir cloudflare-os --filter @gadgets/mcp-gatekeeper test:run && pnpm --dir cloudflare-os --filter @gadgets/mcp-portal-gatekeeper test:run",
     "types:scripts": "tsc -p scripts/tsconfig.json",
     "lint:check": "vp lint",
     "lint:fix": "vp lint --fix",
